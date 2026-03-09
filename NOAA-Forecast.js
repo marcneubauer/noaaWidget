@@ -1,3 +1,6 @@
+// Variables used by Scriptable.
+// These must be at the very top of the file. Do not edit.
+// icon-color: green; icon-glyph: magic;
 // NOAA Graphical Weather Forecast — Scriptable iOS Widget
 // Replicates the NOAA graphical forecast page as a Scriptable widget.
 // Shows 24h of weather data; tap to open scrollable multi-day view.
@@ -10,23 +13,21 @@ const CONFIG = {
   HOURS_PER_PAGE: 24,
 };
 
-const DARK = Device.isUsingDarkAppearance();
-const BG_COLOR = DARK ? new Color("#1C1C1E") : new Color("#FFFFFF");
-const TEXT_COLOR = DARK ? new Color("#FFFFFF") : new Color("#000000");
-const GRID_COLOR = DARK ? new Color("#444444", 0.5) : new Color("#CCCCCC", 0.6);
-const LABEL_COLOR = DARK ? new Color("#BBBBBB") : new Color("#555555");
-const NIGHT_OVERLAY = new Color(DARK ? "#000000" : "#000033", 0.08);
+const BG_COLOR = new Color("#1C1C1E");
+const TEXT_COLOR = new Color("#FFFFFF");
+const GRID_COLOR = new Color("#444444", 0.5);
+const LABEL_COLOR = new Color("#BBBBBB");
+const NIGHT_OVERLAY = new Color("#000000", 0.2);
 
 const SERIES = [
   { key: "temperature",    label: "Temp °F",    color: new Color("#FF4444"), type: "line", group: "temp" },
-  { key: "dewpoint",       label: "Dewpt °F",   color: new Color("#00AA00"), type: "line", group: "temp" },
   { key: "windChill",      label: "WndChl °F",  color: new Color("#6666FF"), type: "line", group: "temp" },
-  { key: "windSpeed",      label: "Wind mph",   color: new Color("#996633"), type: "bar",  group: "wind" },
-  { key: "skyCover",       label: "Sky %",       color: new Color("#888888"), type: "area", group: "sky",    yMin: 0, yMax: 100 },
+  { key: "windSpeed",      label: "Wind mph",   color: new Color("#BBBBBB"), type: "area", group: "wind" },
+  { key: "skyCover",       label: "Sky %",       color: new Color("#CCCCCC"), type: "area", group: "sky",    yMin: 0, yMax: 100 },
   { key: "precipProb",     label: "PoP %",       color: new Color("#0088FF"), type: "bar",  group: "precip", yMin: 0, yMax: 100 },
   { key: "humidity",       label: "RH %",        color: new Color("#00CCCC"), type: "line", group: "rh",     yMin: 0, yMax: 100 },
-  { key: "rain",           label: "Rain in",     color: new Color("#0044AA"), type: "bar",  group: "rain" },
-  { key: "snow",           label: "Snow in",     color: new Color("#AADDFF"), type: "bar",  group: "snow" },
+  { key: "rain",           label: "Rain in",     color: new Color("#66BB66"), type: "bar",  group: "rain" },
+  { key: "snow",           label: "Snow in",     color: new Color("#88BBFF"), type: "bar",  group: "snow" },
 ];
 
 // ── Unit Conversions ───────────────────────────────────────────────
@@ -91,16 +92,24 @@ async function fetchForecastData() {
   if (isCacheValid(cached)) return cached.data;
 
   try {
+    const hdrs = { "User-Agent": "NOAAForecastWidget/1.0", "Accept": "application/geo+json" };
+
     const ptReq = new Request(`https://api.weather.gov/points/${CONFIG.LAT},${CONFIG.LON}`);
-    ptReq.headers = { "User-Agent": "(NOAA-Forecast-Widget, scriptable@example.com)", "Accept": "application/geo+json" };
-    const ptData = await ptReq.loadJSON();
+    ptReq.headers = hdrs;
+    const ptText = await ptReq.loadString();
+    let ptData;
+    try { ptData = JSON.parse(ptText); }
+    catch { throw new Error(`Invalid JSON from points API: ${ptText.slice(0, 100)}`); }
     const { gridId, gridX, gridY } = ptData.properties;
     const city = ptData.properties.relativeLocation.properties.city;
     const state = ptData.properties.relativeLocation.properties.state;
 
     const gridReq = new Request(`https://api.weather.gov/gridpoints/${gridId}/${gridX},${gridY}`);
-    gridReq.headers = ptReq.headers;
-    const gridData = await gridReq.loadJSON();
+    gridReq.headers = hdrs;
+    const gridText = await gridReq.loadString();
+    let gridData;
+    try { gridData = JSON.parse(gridText); }
+    catch { throw new Error(`Invalid JSON from gridpoints API: ${gridText.slice(0, 100)}`); }
     const p = gridData.properties;
 
     const dataset = buildDataset(p, `${city}, ${state}`);
@@ -115,7 +124,6 @@ async function fetchForecastData() {
 function buildDataset(p, locationName) {
   const raw = {
     temperature:  expandTimeSeries(p.temperature),
-    dewpoint:     expandTimeSeries(p.dewpoint),
     windChill:    expandTimeSeries(p.windChill),
     windSpeed:    expandTimeSeries(p.windSpeed),
     windDir:      expandTimeSeries(p.windDirection),
@@ -156,7 +164,6 @@ function buildDataset(p, locationName) {
     locationName,
     hours: hours.map(h => h.toISOString()),
     temperature: mapSeries(raw.temperature, cToF),
-    dewpoint:    mapSeries(raw.dewpoint, cToF),
     windChill:   mapSeries(raw.windChill, cToF),
     windSpeed:   mapSeries(raw.windSpeed, kphToMph),
     windDir:     mapSeries(raw.windDir),
@@ -169,6 +176,11 @@ function buildDataset(p, locationName) {
 }
 
 // ── Drawing Helpers ────────────────────────────────────────────────
+function accumTotal(data) {
+  const sum = data.reduce((s, v) => s + (v != null && v > 0 ? v : 0), 0);
+  return sum < 0.1 && sum > 0 ? sum.toFixed(2) : sum.toFixed(1);
+}
+
 function drawHorizontalGrid(ctx, rect, yMin, yMax, steps) {
   ctx.setStrokeColor(GRID_COLOR);
   ctx.setLineWidth(0.5);
@@ -182,19 +194,54 @@ function drawHorizontalGrid(ctx, rect, yMin, yMax, steps) {
   }
 }
 
-function drawStripLabel(ctx, label, rect) {
-  ctx.setFont(Font.boldSystemFont(8));
-  ctx.setTextColor(LABEL_COLOR);
-  ctx.drawTextInRect(label, new Rect(rect.x + 2, rect.y, 60, 12));
+function drawLegend(ctx, legends, rect) {
+  ctx.setFont(Font.systemFont(11));
+  let lx = rect.x + rect.width;
+  const ly = rect.y;
+  for (let li = legends.length - 1; li >= 0; li--) {
+    const l = legends[li];
+    const textW = l.text.length * 6.5;
+    lx -= textW + 2;
+    ctx.setTextColor(l.color);
+    ctx.drawTextInRect(l.text, new Rect(lx, ly, textW + 2, 14));
+    lx -= 12;
+    ctx.setFillColor(l.color);
+    ctx.fillRect(new Rect(lx, ly + 6, 10, 2));
+    lx -= 6;
+  }
 }
 
-function drawYLabels(ctx, yMin, yMax, rect) {
-  ctx.setFont(Font.systemFont(7));
+function drawYLabels(ctx, yMin, yMax, rect, options) {
+  const fontSize = (options && options.fontSize) || 7;
+  const side = (options && options.side) || "right";
+  ctx.setFont(Font.systemFont(fontSize));
   ctx.setTextColor(LABEL_COLOR);
-  const maxStr = yMax % 1 === 0 ? String(Math.round(yMax)) : yMax.toFixed(1);
-  const minStr = yMin % 1 === 0 ? String(Math.round(yMin)) : yMin.toFixed(1);
-  ctx.drawTextInRect(maxStr, new Rect(rect.x + rect.width - 28, rect.y, 26, 10));
-  ctx.drawTextInRect(minStr, new Rect(rect.x + rect.width - 28, rect.y + rect.height - 10, 26, 10));
+  const displayMax = (options && options.dataMax != null) ? options.dataMax : yMax;
+  const displayMin = (options && options.dataMin != null) ? options.dataMin : yMin;
+  const maxStr = displayMax % 1 === 0 ? String(Math.round(displayMax)) : displayMax.toFixed(1);
+  const minStr = displayMin % 1 === 0 ? String(Math.round(displayMin)) : displayMin.toFixed(1);
+  if (side === "left") {
+    // Position labels at actual data value positions
+    const maxYFrac = (displayMax - yMin) / (yMax - yMin);
+    const minYFrac = (displayMin - yMin) / (yMax - yMin);
+    const maxY = rect.y + rect.height - maxYFrac * rect.height - fontSize / 2;
+    const minY = rect.y + rect.height - minYFrac * rect.height - fontSize / 2;
+    ctx.drawTextInRect(maxStr, new Rect(rect.x + 2, maxY, 40, fontSize + 4));
+    ctx.drawTextInRect(minStr, new Rect(rect.x + 2, minY, 40, fontSize + 4));
+    if (options && options.currentVal != null) {
+      const curStr = Math.round(options.currentVal) + "°";
+      const yFrac = (options.currentVal - yMin) / (yMax - yMin);
+      const curY = rect.y + rect.height - yFrac * rect.height - fontSize / 2;
+      ctx.setTextColor(new Color("#FF4444"));
+      ctx.setFont(Font.boldSystemFont(fontSize));
+      ctx.drawTextInRect(curStr, new Rect(rect.x + 2, curY, 40, fontSize + 4));
+      ctx.setTextColor(LABEL_COLOR);
+      ctx.setFont(Font.systemFont(fontSize));
+    }
+  } else {
+    ctx.drawTextInRect(maxStr, new Rect(rect.x + rect.width - 28, rect.y, 26, 10));
+    ctx.drawTextInRect(minStr, new Rect(rect.x + rect.width - 28, rect.y + rect.height - 10, 26, 10));
+  }
 }
 
 function drawLineChart(ctx, data, yMin, yMax, rect, color, lineWidth) {
@@ -228,9 +275,9 @@ function drawBarChart(ctx, data, yMin, yMax, rect, color) {
   }
 }
 
-function drawFilledArea(ctx, data, yMin, yMax, rect, color) {
+function drawFilledArea(ctx, data, yMin, yMax, rect, color, opacity) {
   if (data.every(v => v == null)) return;
-  const fillColor = new Color(color.hex, 0.3);
+  const fillColor = new Color(color.hex, opacity != null ? opacity : 0.3);
   ctx.setFillColor(fillColor);
   const path = new Path();
   path.move(new Point(rect.x, rect.y + rect.height));
@@ -325,9 +372,9 @@ function autoRange(data, padding) {
   return { min: Math.floor(min - pad), max: Math.ceil(max + pad) };
 }
 
-function renderForecastGraph(dataset, startIdx, count) {
+function renderForecastGraph(dataset, startIdx, count, pageIndex) {
   const W = 720;
-  const H = 680;
+  const H = 370;
   const ctx = new DrawContext();
   ctx.size = new Size(W, H);
   ctx.opaque = true;
@@ -343,112 +390,115 @@ function renderForecastGraph(dataset, startIdx, count) {
   const PLOT_W = W - MARGIN_L - MARGIN_R;
 
   // Header
-  const startDate = new Date(hours[0]);
-  const endDate = new Date(hours[hours.length - 1]);
-  const fmt = (d) => d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  const timeLabel = pageIndex === 0 ? "now" : `+${pageIndex * CONFIG.HOURS_PER_PAGE}h`;
   ctx.setFont(Font.boldSystemFont(13));
   ctx.setTextColor(TEXT_COLOR);
   ctx.drawTextInRect(
-    `${dataset.locationName} — ${fmt(startDate)} to ${fmt(endDate)}`,
+    `Foxtown ${timeLabel}`,
     new Rect(MARGIN_L + 2, 4, PLOT_W, 18)
   );
 
   // Strip definitions: { key(s), label, type, height }
   const strips = [
     {
-      label: "Temperature / Dewpoint / Wind Chill (°F)", height: 100, type: "multi-line",
+      height: 100, type: "multi-line",
       series: [
+        { data: sliceData("windSpeed"), color: SERIES[2].color, width: 1, fill: true, fixedYMin: 0, fixedYMax: 100, fillOpacity: 0.12 },
         { data: sliceData("temperature"), color: SERIES[0].color, width: 2 },
-        { data: sliceData("dewpoint"),    color: SERIES[1].color, width: 1.5 },
-        { data: sliceData("windChill"),   color: SERIES[2].color, width: 1 },
+        { data: sliceData("windChill"),   color: SERIES[1].color, width: 1 },
       ],
     },
     {
-      label: "Wind Speed (mph)", height: 70, type: "bar",
-      data: sliceData("windSpeed"), color: SERIES[3].color,
-      windDir: sliceData("windDir"),
-    },
-    {
-      label: "Sky Cover (%)", height: 60, type: "area",
-      data: sliceData("skyCover"), color: SERIES[4].color,
+      height: 80, type: "multi-line",
       yMin: 0, yMax: 100,
+      series: [
+        { data: sliceData("skyCover"),   color: SERIES[3].color, width: 1.5, fill: true },
+        { data: sliceData("precipProb"), color: SERIES[4].color, width: 2 },
+        { data: sliceData("humidity"),   color: SERIES[5].color, width: 1.5 },
+      ],
+      legend: [
+        { text: "Sky Cover", color: SERIES[3].color },
+        { text: "Precipitation Probability", color: SERIES[4].color },
+        { text: "Relative Humidity", color: SERIES[5].color },
+      ],
     },
     {
-      label: "Precip Probability (%)", height: 60, type: "bar",
-      data: sliceData("precipProb"), color: SERIES[5].color,
-      yMin: 0, yMax: 100,
+      height: 50, type: "bar",
+      data: sliceData("rain"), color: SERIES[6].color, showAccum: true,
+      legend: [{ text: `Rain ${accumTotal(sliceData("rain"))} inches`, color: SERIES[6].color }],
     },
     {
-      label: "Relative Humidity (%)", height: 55, type: "line",
-      data: sliceData("humidity"), color: SERIES[6].color,
-      yMin: 0, yMax: 100,
-    },
-    {
-      label: "Rain (in)", height: 50, type: "bar",
-      data: sliceData("rain"), color: SERIES[7].color,
-    },
-    {
-      label: "Snow (in)", height: 50, type: "bar",
-      data: sliceData("snow"), color: SERIES[8].color,
+      height: 50, type: "bar",
+      data: sliceData("snow"), color: SERIES[7].color, showAccum: true,
+      legend: [{ text: `Snow ${accumTotal(sliceData("snow"))} inches`, color: SERIES[7].color }],
     },
   ];
 
   let y = 26;
-  const GAP = 6;
+  const GAP = 8;
+  const SEP_H = 4;
 
-  for (const strip of strips) {
+  for (let si = 0; si < strips.length; si++) {
+    const strip = strips[si];
+
+    // Dark separator between strips
+    if (si > 0) {
+      ctx.setFillColor(new Color("#000000", 0.5));
+      ctx.fillRect(new Rect(MARGIN_L, y - GAP + (GAP - SEP_H) / 2, PLOT_W, SEP_H));
+    }
+
     const rect = new Rect(MARGIN_L, y, PLOT_W, strip.height);
 
     // Night shading
     drawNightShading(ctx, hours, rect);
 
-    // Separator line at top
-    ctx.setStrokeColor(GRID_COLOR);
-    ctx.setLineWidth(0.5);
-    const sep = new Path();
-    sep.move(new Point(rect.x, rect.y));
-    sep.addLine(new Point(rect.x + rect.width, rect.y));
-    ctx.addPath(sep);
-    ctx.strokePath();
-
-    // Label
-    drawStripLabel(ctx, strip.label, rect);
-    const plotRect = new Rect(rect.x, rect.y + 12, rect.width, rect.height - 12);
+    const plotRect = new Rect(rect.x, rect.y + 14, rect.width, rect.height - 14);
 
     if (strip.type === "multi-line") {
-      // Auto-range across all series
-      const allVals = strip.series.flatMap(s => s.data).filter(v => v != null);
-      const range = autoRange(allVals, 0.1);
+      const hasFixedRange = strip.yMin != null && strip.yMax != null;
+      const sharedSeries = strip.series.filter(s => s.fixedYMin == null);
+      const allVals = sharedSeries.flatMap(s => s.data).filter(v => v != null);
+      const range = hasFixedRange ? { min: strip.yMin, max: strip.yMax } : autoRange(allVals, 0.1);
       drawHorizontalGrid(ctx, plotRect, range.min, range.max, 4);
-      drawYLabels(ctx, range.min, range.max, plotRect);
+      const currentVal = !hasFixedRange ? sharedSeries[0].data.find(v => v != null) : undefined;
+      const dataMax = !hasFixedRange ? Math.max(...allVals) : undefined;
+      const dataMin = !hasFixedRange ? Math.min(...allVals) : undefined;
+      const yLabelOpts = hasFixedRange ? {} : { side: "left", fontSize: 14, currentVal, dataMax, dataMin };
+      drawYLabels(ctx, range.min, range.max, plotRect, yLabelOpts);
       for (const s of strip.series) {
-        drawLineChart(ctx, s.data, range.min, range.max, plotRect, s.color, s.width);
+        const sYMin = s.fixedYMin != null ? s.fixedYMin : range.min;
+        const sYMax = s.fixedYMax != null ? s.fixedYMax : range.max;
+        if (s.fill) {
+          drawFilledArea(ctx, s.data, sYMin, sYMax, plotRect, s.color, s.fillOpacity);
+        } else {
+          drawLineChart(ctx, s.data, sYMin, sYMax, plotRect, s.color, s.width);
+        }
       }
-      // Legend
-      let lx = rect.x + 2;
-      const ly = rect.y + rect.height - 10;
-      ctx.setFont(Font.systemFont(7));
-      const labels = [
-        { text: "Temp", color: SERIES[0].color },
-        { text: "Dewpt", color: SERIES[1].color },
-        { text: "WndChl", color: SERIES[2].color },
+      // Legend (top-right)
+      const legends = strip.legend || [
+        { text: "Temperature (°F)", color: SERIES[0].color },
+        { text: "Wind Chill (°F)", color: SERIES[1].color },
       ];
-      for (const l of labels) {
-        ctx.setFillColor(l.color);
-        ctx.fillRect(new Rect(lx, ly + 3, 8, 2));
-        lx += 10;
-        ctx.setTextColor(l.color);
-        ctx.drawTextInRect(l.text, new Rect(lx, ly, 30, 10));
-        lx += 32;
-      }
+      drawLegend(ctx, legends, rect);
     } else if (strip.type === "bar") {
       const yMin = strip.yMin != null ? strip.yMin : 0;
       const yMax = strip.yMax != null ? strip.yMax : (autoRange(strip.data, 0.1).max || 1);
       drawHorizontalGrid(ctx, plotRect, yMin, yMax, 4);
-      drawYLabels(ctx, yMin, yMax, plotRect);
       drawBarChart(ctx, strip.data, yMin, yMax, plotRect, strip.color);
-      if (strip.windDir) {
-        drawWindDirectionLabels(ctx, strip.windDir, hours, plotRect);
+      if (strip.legend) drawLegend(ctx, strip.legend, rect);
+      if (strip.showAccum) {
+        ctx.setFont(Font.systemFont(6));
+        ctx.setTextColor(LABEL_COLOR);
+        const barW = plotRect.width / strip.data.length;
+        for (let i = 0; i < strip.data.length; i++) {
+          if (strip.data[i] != null && strip.data[i] > 0) {
+            const val = strip.data[i];
+            const label = val < 0.1 ? val.toFixed(2) : val.toFixed(1);
+            const yFrac = Math.min((val - yMin) / (yMax - yMin), 1);
+            const barY = plotRect.y + plotRect.height - yFrac * plotRect.height;
+            ctx.drawTextInRect(label, new Rect(plotRect.x + i * barW - 4, barY - 9, barW + 8, 9));
+          }
+        }
       }
     } else if (strip.type === "area") {
       const yMin = strip.yMin != null ? strip.yMin : 0;
@@ -462,6 +512,9 @@ function renderForecastGraph(dataset, startIdx, count) {
       drawHorizontalGrid(ctx, plotRect, yMin, yMax, 4);
       drawYLabels(ctx, yMin, yMax, plotRect);
       drawLineChart(ctx, strip.data, yMin, yMax, plotRect, strip.color, 1.5);
+      if (strip.windDir) {
+        drawWindDirectionLabels(ctx, strip.windDir, hours, plotRect);
+      }
     }
 
     y += strip.height + GAP;
@@ -489,7 +542,7 @@ async function createWidget() {
   startIdx = Math.max(0, startIdx - 2);
   const count = Math.min(CONFIG.HOURS_PER_PAGE, dataset.hours.length - startIdx);
 
-  const img = renderForecastGraph(dataset, startIdx, count);
+  const img = renderForecastGraph(dataset, startIdx, count, 0);
 
   const widget = new ListWidget();
   widget.backgroundImage = img;
@@ -518,11 +571,11 @@ async function presentFullView() {
   }
   firstIdx = Math.max(0, firstIdx - 2);
 
-  for (let start = firstIdx; start < totalHours; start += pageSize) {
+  for (let start = firstIdx, pi = 0; start < totalHours; start += pageSize, pi++) {
     const count = Math.min(pageSize, totalHours - start);
     if (count < 6) break; // Skip tiny leftover pages
 
-    const img = renderForecastGraph(dataset, start, count);
+    const img = renderForecastGraph(dataset, start, count, pi);
     const row = new UITableRow();
     row.height = 360;
     const cell = row.addImage(img);

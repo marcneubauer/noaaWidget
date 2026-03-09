@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NOAA Forecast Preview</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #111; font-family: -apple-system, system-ui, sans-serif; padding: 20px; }
+  h1 { color: #ccc; font-size: 16px; margin-bottom: 12px; }
+  .controls { margin-bottom: 16px; display: flex; gap: 12px; align-items: center; }
+  .controls label { color: #aaa; font-size: 13px; }
+  .controls select, .controls button { font-size: 13px; padding: 4px 8px; }
+  #status { color: #888; font-size: 12px; margin-bottom: 8px; }
+  .page { margin-bottom: 24px; }
+  canvas { display: block; width: 100%; border: 1px solid #333; border-radius: 8px; }
+</style>
+</head>
+<body>
+<h1>NOAA Forecast Widget Preview</h1>
+<div class="controls">
+  <button onclick="reload()">Reload Data</button>
+  <button onclick="loadSimulated()">Simulated Data</button>
+</div>
+<div id="status">Loading...</div>
+<div id="pages"></div>
+
+<script>
+// ── Configuration ──────────────────────────────────────────────────
+const CONFIG = {
+  LAT: 39.5156,
+  LON: -105.3055,
+  HOURS_PER_PAGE: 24,
+};
+
+const COLORS = {
+  BG:    "#1C1C1E",
+  TEXT:  "#FFFFFF",
+  GRID:  "rgba(68,68,68,0.5)",
+  LABEL: "#BBBBBB",
+  NIGHT: "rgba(0,0,0,0.2)",
+};
+
+const SERIES_COLORS = {
+  temperature: "#FF4444",
+  windChill:   "#6666FF",
+  windSpeed:   "#BBBBBB",
+  skyCover:    "#CCCCCC",
+  precipProb:  "#0088FF",
+  humidity:    "#00CCCC",
+  rain:        "#66BB66",
+  snow:        "#88BBFF",
+};
+
+// ── Unit Conversions ───────────────────────────────────────────────
+function cToF(c) { return c != null ? c * 9 / 5 + 32 : null; }
+function kphToMph(k) { return k != null ? k * 0.621371 : null; }
+function mmToIn(mm) { return mm != null ? mm / 25.4 : null; }
+function degToCardinal(d) {
+  if (d == null) return "";
+  const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+  return dirs[Math.round(d / 22.5) % 16];
+}
+
+// ── ISO 8601 Duration Parsing ──────────────────────────────────────
+function parseDurationHours(dur) {
+  let hours = 0;
+  const dayMatch = dur.match(/(\d+)D/);
+  const hourMatch = dur.match(/(\d+)H/);
+  if (dayMatch) hours += parseInt(dayMatch[1]) * 24;
+  if (hourMatch) hours += parseInt(hourMatch[1]);
+  return Math.max(hours, 1);
+}
+
+function expandTimeSeries(property) {
+  if (!property || !property.values) return [];
+  const result = [];
+  for (const v of property.values) {
+    const [dateStr, durStr] = v.validTime.split("/");
+    const start = new Date(dateStr);
+    const durationH = parseDurationHours(durStr);
+    for (let h = 0; h < durationH; h++) {
+      const t = new Date(start.getTime() + h * 3600000);
+      result.push({ time: t, value: v.value });
+    }
+  }
+  return result;
+}
+
+// ── Data Fetching ──────────────────────────────────────────────────
+async function fetchJSON(url) {
+  const headers = { "Accept": "application/geo+json", "User-Agent": "NOAAForecastWidget/1.0" };
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText} for ${url}`);
+  const text = await res.text();
+  try { return JSON.parse(text); }
+  catch { throw new Error(`Invalid JSON from ${url}: ${text.slice(0, 100)}`); }
+}
+
+async function fetchForecastData() {
+  const ptData = await fetchJSON(`https://api.weather.gov/points/${CONFIG.LAT},${CONFIG.LON}`);
+  const { gridId, gridX, gridY } = ptData.properties;
+  const city = ptData.properties.relativeLocation.properties.city;
+  const state = ptData.properties.relativeLocation.properties.state;
+
+  const gridData = await fetchJSON(`https://api.weather.gov/gridpoints/${gridId}/${gridX},${gridY}`);
+  return buildDataset(gridData.properties, `${city}, ${state}`);
+}
+
+function buildDataset(p, locationName) {
+  const raw = {
+    temperature:  expandTimeSeries(p.temperature),
+    windChill:    expandTimeSeries(p.windChill),
+    windSpeed:    expandTimeSeries(p.windSpeed),
+    windDir:      expandTimeSeries(p.windDirection),
+    skyCover:     expandTimeSeries(p.skyCover),
+    precipProb:   expandTimeSeries(p.probabilityOfPrecipitation),
+    humidity:     expandTimeSeries(p.relativeHumidity),
+    rain:         expandTimeSeries(p.quantitativePrecipitation),
+    snow:         expandTimeSeries(p.snowfallAmount),
+  };
+
+  let minTime = Infinity, maxTime = -Infinity;
+  for (const key of Object.keys(raw)) {
+    for (const pt of raw[key]) {
+      const t = pt.time.getTime();
+      if (t < minTime) minTime = t;
+      if (t > maxTime) maxTime = t;
+    }
+  }
+
+  const hours = [];
+  for (let t = minTime; t <= maxTime; t += 3600000) hours.push(new Date(t));
+
+  function mapSeries(arr, convert) {
+    const lookup = new Map();
+    for (const pt of arr) lookup.set(pt.time.getTime(), pt.value);
+    return hours.map(h => {
+      const v = lookup.get(h.getTime());
+      return convert ? convert(v != null ? v : null) : (v != null ? v : null);
+    });
+  }
+
+  return {
+    locationName,
+    hours: hours.map(h => h.toISOString()),
+    temperature: mapSeries(raw.temperature, cToF),
+    windChill:   mapSeries(raw.windChill, cToF),
+    windSpeed:   mapSeries(raw.windSpeed, kphToMph),
+    windDir:     mapSeries(raw.windDir),
+    skyCover:    mapSeries(raw.skyCover),
+    precipProb:  mapSeries(raw.precipProb),
+    humidity:    mapSeries(raw.humidity),
+    rain:        mapSeries(raw.rain, mmToIn),
+    snow:        mapSeries(raw.snow, mmToIn),
+  };
+}
+
+// ── Drawing Helpers ────────────────────────────────────────────────
+function autoRange(data, padding) {
+  const valid = data.filter(v => v != null);
+  if (valid.length === 0) return { min: 0, max: 1 };
+  let min = Math.min(...valid);
+  let max = Math.max(...valid);
+  if (min === max) { min -= 1; max += 1; }
+  const pad = (max - min) * (padding || 0.1);
+  return { min: Math.floor(min - pad), max: Math.ceil(max + pad) };
+}
+
+function accumTotal(data) {
+  const sum = data.reduce((s, v) => s + (v != null && v > 0 ? v : 0), 0);
+  return sum < 0.1 && sum > 0 ? sum.toFixed(2) : sum.toFixed(1);
+}
+
+function drawHorizontalGrid(ctx, rect, steps) {
+  const C = COLORS;
+  ctx.strokeStyle = C.GRID;
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= steps; i++) {
+    const y = rect.y + (i / steps) * rect.h;
+    ctx.beginPath();
+    ctx.moveTo(rect.x, y);
+    ctx.lineTo(rect.x + rect.w, y);
+    ctx.stroke();
+  }
+}
+
+function drawLegend(ctx, legends, rect) {
+  ctx.font = "11px -apple-system, system-ui, sans-serif";
+  let lx = rect.x + rect.w;
+  const ly = rect.y;
+  for (let li = legends.length - 1; li >= 0; li--) {
+    const l = legends[li];
+    ctx.textAlign = "right";
+    ctx.fillStyle = l.color;
+    lx -= 2;
+    ctx.fillText(l.text, lx, ly + 12);
+    lx -= ctx.measureText(l.text).width + 2;
+    ctx.fillRect(lx - 10, ly + 6, 10, 2);
+    lx -= 14;
+  }
+  ctx.textAlign = "left";
+}
+
+function drawYLabels(ctx, yMin, yMax, rect, options) {
+  const C = COLORS;
+  const fontSize = (options && options.fontSize) || 7;
+  const side = (options && options.side) || "right";
+  ctx.font = `${fontSize}px -apple-system, system-ui, sans-serif`;
+  ctx.fillStyle = C.LABEL;
+  const displayMax = (options && options.dataMax != null) ? options.dataMax : yMax;
+  const displayMin = (options && options.dataMin != null) ? options.dataMin : yMin;
+  const maxStr = displayMax % 1 === 0 ? String(Math.round(displayMax)) : displayMax.toFixed(1);
+  const minStr = displayMin % 1 === 0 ? String(Math.round(displayMin)) : displayMin.toFixed(1);
+  if (side === "left") {
+    ctx.textAlign = "left";
+    // Position labels at actual data value positions
+    const maxYFrac = (displayMax - yMin) / (yMax - yMin);
+    const minYFrac = (displayMin - yMin) / (yMax - yMin);
+    const maxY = rect.y + rect.h - maxYFrac * rect.h + fontSize / 3;
+    const minY = rect.y + rect.h - minYFrac * rect.h + fontSize / 3;
+    ctx.fillText(maxStr, rect.x + 2, maxY);
+    ctx.fillText(minStr, rect.x + 2, minY);
+    if (options && options.currentVal != null) {
+      const curStr = Math.round(options.currentVal) + "°";
+      const yFrac = (options.currentVal - yMin) / (yMax - yMin);
+      const curY = rect.y + rect.h - yFrac * rect.h + fontSize / 3;
+      ctx.fillStyle = "#FF4444";
+      ctx.font = `bold ${fontSize}px -apple-system, system-ui, sans-serif`;
+      ctx.fillText(curStr, rect.x + 2, curY);
+      ctx.fillStyle = C.LABEL;
+      ctx.font = `${fontSize}px -apple-system, system-ui, sans-serif`;
+    }
+  } else {
+    ctx.textAlign = "right";
+    ctx.fillText(maxStr, rect.x + rect.w - 2, rect.y + 9);
+    ctx.fillText(minStr, rect.x + rect.w - 2, rect.y + rect.h - 2);
+  }
+  ctx.textAlign = "left";
+}
+
+function drawLineChart(ctx, data, yMin, yMax, rect, color, lineWidth) {
+  if (data.every(v => v == null)) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth || 1.5;
+  ctx.beginPath();
+  let started = false;
+  for (let i = 0; i < data.length; i++) {
+    if (data[i] == null) { started = false; continue; }
+    const x = rect.x + (i / (data.length - 1)) * rect.w;
+    const yFrac = (data[i] - yMin) / (yMax - yMin);
+    const y = rect.y + rect.h - yFrac * rect.h;
+    if (!started) { ctx.moveTo(x, y); started = true; }
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawBarChart(ctx, data, yMin, yMax, rect, color) {
+  const barW = rect.w / data.length;
+  ctx.fillStyle = color;
+  for (let i = 0; i < data.length; i++) {
+    if (data[i] == null || data[i] <= 0) continue;
+    const yFrac = Math.min((data[i] - yMin) / (yMax - yMin), 1);
+    const barH = yFrac * rect.h;
+    const x = rect.x + i * barW;
+    const y = rect.y + rect.h - barH;
+    ctx.fillRect(x, y, Math.max(barW - 1, 1), barH);
+  }
+}
+
+function drawFilledArea(ctx, data, yMin, yMax, rect, color, opacity) {
+  if (data.every(v => v == null)) return;
+  const a = opacity != null ? opacity : 0.3;
+  const r = parseInt(color.slice(1,3), 16);
+  const g = parseInt(color.slice(3,5), 16);
+  const b = parseInt(color.slice(5,7), 16);
+  ctx.fillStyle = `rgba(${r},${g},${b},${a})`;
+  ctx.beginPath();
+  ctx.moveTo(rect.x, rect.y + rect.h);
+  for (let i = 0; i < data.length; i++) {
+    const val = data[i] != null ? data[i] : 0;
+    const x = rect.x + (i / (data.length - 1)) * rect.w;
+    const yFrac = (val - yMin) / (yMax - yMin);
+    const y = rect.y + rect.h - yFrac * rect.h;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(rect.x + rect.w, rect.y + rect.h);
+  ctx.closePath();
+  ctx.fill();
+  drawLineChart(ctx, data, yMin, yMax, rect, color, 1);
+}
+
+function drawNightShading(ctx, hours, rect) {
+  const C = COLORS;
+  const barW = rect.w / hours.length;
+  ctx.fillStyle = C.NIGHT;
+  for (let i = 0; i < hours.length; i++) {
+    const d = new Date(hours[i]);
+    const h = d.getHours();
+    if (h < 6 || h >= 20) {
+      ctx.fillRect(rect.x + i * barW, rect.y, barW, rect.h);
+    }
+  }
+}
+
+function drawTimeAxis(ctx, hours, rect) {
+  const C = COLORS;
+  ctx.font = "8px -apple-system, system-ui, sans-serif";
+  ctx.fillStyle = C.LABEL;
+  const barW = rect.w / hours.length;
+  let lastDay = -1;
+  for (let i = 0; i < hours.length; i++) {
+    const d = new Date(hours[i]);
+    const h = d.getHours();
+    if (h % 3 === 0) {
+      const label = h === 0 ? "12a" : h === 12 ? "12p" : h < 12 ? `${h}a` : `${h - 12}p`;
+      const x = rect.x + i * barW;
+      ctx.fillStyle = C.LABEL;
+      ctx.textAlign = "center";
+      ctx.fillText(label, x, rect.y + 10);
+      ctx.textAlign = "left";
+
+      // Vertical grid line
+      ctx.strokeStyle = (h === 0 || h === 12) ? C.LABEL : C.GRID;
+      ctx.globalAlpha = (h === 0 || h === 12) ? 0.4 : 1;
+      ctx.lineWidth = h === 0 ? 1 : 0.5;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, rect.y);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    if (d.getDate() !== lastDay) {
+      lastDay = d.getDate();
+      const dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+      const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      const dayLabel = `${dayNames[d.getDay()]} ${monthNames[d.getMonth()]} ${d.getDate()}`;
+      const x = rect.x + i * barW;
+      ctx.font = "bold 8px -apple-system, system-ui, sans-serif";
+      ctx.fillStyle = C.TEXT;
+      ctx.fillText(dayLabel, x + 2, rect.y + 24);
+      ctx.font = "8px -apple-system, system-ui, sans-serif";
+      ctx.fillStyle = C.LABEL;
+    }
+  }
+}
+
+function drawWindDirectionLabels(ctx, windDir, hours, rect) {
+  const C = COLORS;
+  ctx.font = "6px -apple-system, system-ui, sans-serif";
+  ctx.fillStyle = C.LABEL;
+  const barW = rect.w / hours.length;
+  for (let i = 0; i < hours.length; i++) {
+    const d = new Date(hours[i]);
+    if (d.getHours() % 3 === 0 && windDir[i] != null) {
+      const cardinal = degToCardinal(windDir[i]);
+      const x = rect.x + i * barW;
+      ctx.textAlign = "center";
+      ctx.fillText(cardinal, x, rect.y + rect.h - 2);
+      ctx.textAlign = "left";
+    }
+  }
+}
+
+// ── Main Graph Renderer ───────────────────────────────────────────
+function renderForecastGraph(canvas, dataset, startIdx, count, pageIndex) {
+  const containerW = canvas.parentElement.clientWidth;
+  const W = Math.max(containerW, 400);
+  const H = 370;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+
+  const C = COLORS;
+  ctx.fillStyle = C.BG;
+  ctx.fillRect(0, 0, W, H);
+
+  const hours = dataset.hours.slice(startIdx, startIdx + count);
+  const sliceData = (key) => dataset[key].slice(startIdx, startIdx + count);
+
+  const MARGIN_L = 4;
+  const MARGIN_R = 4;
+  const PLOT_W = W - MARGIN_L - MARGIN_R;
+
+  // Header
+  const timeLabel = pageIndex === 0 ? "now" : `+${pageIndex * CONFIG.HOURS_PER_PAGE}h`;
+  ctx.font = "bold 13px -apple-system, system-ui, sans-serif";
+  ctx.fillStyle = C.TEXT;
+  ctx.fillText(`Foxtown ${timeLabel}`, MARGIN_L + 2, 18);
+
+  const strips = [
+    {
+      height: 100, type: "multi-line",
+      series: [
+        { data: sliceData("windSpeed"), color: SERIES_COLORS.windSpeed, width: 1, fill: true, fixedYMin: 0, fixedYMax: 100, fillOpacity: 0.12 },
+        { data: sliceData("temperature"), color: SERIES_COLORS.temperature, width: 2 },
+        { data: sliceData("windChill"),   color: SERIES_COLORS.windChill,   width: 1 },
+      ],
+    },
+    {
+      height: 80, type: "multi-line",
+      yMin: 0, yMax: 100,
+      series: [
+        { data: sliceData("skyCover"),   color: SERIES_COLORS.skyCover,  width: 1.5, fill: true },
+        { data: sliceData("precipProb"), color: SERIES_COLORS.precipProb, width: 2 },
+        { data: sliceData("humidity"),   color: SERIES_COLORS.humidity,   width: 1.5 },
+      ],
+      legend: [
+        { text: "Sky Cover", color: SERIES_COLORS.skyCover },
+        { text: "Precipitation Probability", color: SERIES_COLORS.precipProb },
+        { text: "Relative Humidity", color: SERIES_COLORS.humidity },
+      ],
+    },
+    {
+      height: 50, type: "bar",
+      data: sliceData("rain"), color: SERIES_COLORS.rain, showAccum: true,
+      legend: [{ text: `Rain ${accumTotal(sliceData("rain"))} inches`, color: SERIES_COLORS.rain }],
+    },
+    {
+      height: 50, type: "bar",
+      data: sliceData("snow"), color: SERIES_COLORS.snow, showAccum: true,
+      legend: [{ text: `Snow ${accumTotal(sliceData("snow"))} inches`, color: SERIES_COLORS.snow }],
+    },
+  ];
+
+  let y = 26;
+  const GAP = 8;
+  const SEP_H = 4;
+
+  for (let si = 0; si < strips.length; si++) {
+    const strip = strips[si];
+
+    // Dark separator between strips
+    if (si > 0) {
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(MARGIN_L, y - GAP + (GAP - SEP_H) / 2, PLOT_W, SEP_H);
+    }
+
+    const rect = { x: MARGIN_L, y, w: PLOT_W, h: strip.height };
+
+    drawNightShading(ctx, hours, rect);
+
+    const plotRect = { x: rect.x, y: rect.y + 14, w: rect.w, h: rect.h - 14 };
+
+    if (strip.type === "multi-line") {
+      const hasFixedRange = strip.yMin != null && strip.yMax != null;
+      const sharedSeries = strip.series.filter(s => s.fixedYMin == null);
+      const allVals = sharedSeries.flatMap(s => s.data).filter(v => v != null);
+      const range = hasFixedRange ? { min: strip.yMin, max: strip.yMax } : autoRange(allVals, 0.1);
+      drawHorizontalGrid(ctx, plotRect, 4);
+      const currentVal = !hasFixedRange ? sharedSeries[0].data.find(v => v != null) : undefined;
+      const dataMax = !hasFixedRange ? Math.max(...allVals) : undefined;
+      const dataMin = !hasFixedRange ? Math.min(...allVals) : undefined;
+      const yLabelOpts = hasFixedRange ? {} : { side: "left", fontSize: 14, currentVal, dataMax, dataMin };
+      drawYLabels(ctx, range.min, range.max, plotRect, yLabelOpts);
+      for (const s of strip.series) {
+        const sYMin = s.fixedYMin != null ? s.fixedYMin : range.min;
+        const sYMax = s.fixedYMax != null ? s.fixedYMax : range.max;
+        if (s.fill) {
+          drawFilledArea(ctx, s.data, sYMin, sYMax, plotRect, s.color, s.fillOpacity);
+        } else {
+          drawLineChart(ctx, s.data, sYMin, sYMax, plotRect, s.color, s.width);
+        }
+      }
+      // Legend (top-right)
+      const legends = strip.legend || [
+        { text: "Temperature (°F)", color: SERIES_COLORS.temperature },
+        { text: "Wind Chill (°F)", color: SERIES_COLORS.windChill },
+      ];
+      drawLegend(ctx, legends, rect);
+    } else if (strip.type === "bar") {
+      const yMin = strip.yMin != null ? strip.yMin : 0;
+      const yMax = strip.yMax != null ? strip.yMax : (autoRange(strip.data, 0.1).max || 1);
+      drawHorizontalGrid(ctx, plotRect, 4);
+      drawBarChart(ctx, strip.data, yMin, yMax, plotRect, strip.color);
+      if (strip.legend) drawLegend(ctx, strip.legend, rect);
+      if (strip.showAccum) {
+        const C = COLORS;
+        ctx.font = "6px -apple-system, system-ui, sans-serif";
+        ctx.fillStyle = C.LABEL;
+        ctx.textAlign = "center";
+        const barW = plotRect.w / strip.data.length;
+        for (let i = 0; i < strip.data.length; i++) {
+          if (strip.data[i] != null && strip.data[i] > 0) {
+            const val = strip.data[i];
+            const label = val < 0.1 ? val.toFixed(2) : val.toFixed(1);
+            const yFrac = Math.min((val - yMin) / (yMax - yMin), 1);
+            const barY = plotRect.y + plotRect.h - yFrac * plotRect.h;
+            ctx.fillText(label, plotRect.x + i * barW + barW / 2, barY - 2);
+          }
+        }
+        ctx.textAlign = "left";
+      }
+    } else if (strip.type === "area") {
+      const yMin = strip.yMin != null ? strip.yMin : 0;
+      const yMax = strip.yMax != null ? strip.yMax : 100;
+      drawHorizontalGrid(ctx, plotRect, 4);
+      drawYLabels(ctx, yMin, yMax, plotRect);
+      drawFilledArea(ctx, strip.data, yMin, yMax, plotRect, strip.color);
+    } else if (strip.type === "line") {
+      const yMin = strip.yMin != null ? strip.yMin : autoRange(strip.data, 0.1).min;
+      const yMax = strip.yMax != null ? strip.yMax : autoRange(strip.data, 0.1).max;
+      drawHorizontalGrid(ctx, plotRect, 4);
+      drawYLabels(ctx, yMin, yMax, plotRect);
+      drawLineChart(ctx, strip.data, yMin, yMax, plotRect, strip.color, 1.5);
+      if (strip.windDir) {
+        drawWindDirectionLabels(ctx, strip.windDir, hours, plotRect);
+      }
+    }
+
+    y += strip.height + GAP;
+  }
+
+  const axisRect = { x: MARGIN_L, y, w: PLOT_W, h: 28 };
+  drawTimeAxis(ctx, hours, axisRect);
+}
+
+// ── Main ──────────────────────────────────────────────────────────
+let cachedDataset = null;
+
+function generateSimulatedData() {
+  const now = new Date();
+  now.setMinutes(0, 0, 0);
+  const totalHours = 168; // 7 days
+  const hours = [];
+  for (let i = 0; i < totalHours; i++) {
+    hours.push(new Date(now.getTime() + i * 3600000).toISOString());
+  }
+
+  function hourVal(i) {
+    const d = new Date(hours[i]);
+    return d.getHours();
+  }
+
+  // Temperature: diurnal cycle 25-55°F with a cold front mid-week
+  const temperature = hours.map((_, i) => {
+    const h = hourVal(i);
+    const dayOffset = i / 24;
+    const base = 40 - dayOffset * 1.5; // cooling trend
+    const diurnal = 15 * Math.sin((h - 6) * Math.PI / 12);
+    return Math.round(base + diurnal + (Math.random() - 0.5) * 3);
+  });
+
+  // Wind chill: only when temp < 40 and wind > 10
+  const windSpeed = hours.map((_, i) => {
+    const h = hourVal(i);
+    const dayOffset = i / 24;
+    const base = 8 + dayOffset * 2; // increasing wind
+    const gust = 5 * Math.sin(i * 0.3) + 3 * Math.sin(i * 0.7);
+    return Math.max(0, Math.round(base + gust + (Math.random() - 0.5) * 4));
+  });
+
+  const windChill = hours.map((_, i) => {
+    if (temperature[i] < 40 && windSpeed[i] > 10) {
+      return Math.round(temperature[i] - windSpeed[i] * 0.3 - 3);
+    }
+    return null;
+  });
+
+  const windDir = hours.map((_, i) => {
+    const base = 270 + 30 * Math.sin(i * 0.1);
+    return Math.round(base + (Math.random() - 0.5) * 40) % 360;
+  });
+
+  // Sky cover: increasing before storm, clearing after
+  const skyCover = hours.map((_, i) => {
+    const dayOffset = i / 24;
+    if (dayOffset < 2) return Math.min(100, Math.round(30 + dayOffset * 25 + (Math.random() - 0.5) * 10));
+    if (dayOffset < 4) return Math.min(100, Math.round(80 + (Math.random() - 0.5) * 15));
+    return Math.max(0, Math.round(60 - (dayOffset - 4) * 15 + (Math.random() - 0.5) * 10));
+  });
+
+  // Precip probability: storm days 2-4
+  const precipProb = hours.map((_, i) => {
+    const dayOffset = i / 24;
+    if (dayOffset < 1.5) return Math.max(0, Math.round(10 + (Math.random() - 0.5) * 10));
+    if (dayOffset < 2) return Math.round(30 + (Math.random() - 0.5) * 15);
+    if (dayOffset < 4) return Math.min(100, Math.round(70 + (Math.random() - 0.5) * 20));
+    if (dayOffset < 5) return Math.round(40 + (Math.random() - 0.5) * 15);
+    return Math.max(0, Math.round(15 + (Math.random() - 0.5) * 10));
+  });
+
+  // Humidity
+  const humidity = hours.map((_, i) => {
+    const dayOffset = i / 24;
+    const h = hourVal(i);
+    const base = dayOffset < 4 ? 65 : 45;
+    const diurnal = 15 * Math.cos((h - 6) * Math.PI / 12);
+    return Math.min(100, Math.max(20, Math.round(base + diurnal + (Math.random() - 0.5) * 8)));
+  });
+
+  // Rain: scattered during storm, heavier on days 2-3
+  const rain = hours.map((_, i) => {
+    const dayOffset = i / 24;
+    if (dayOffset < 1.5 || dayOffset > 4.5) return 0;
+    if (temperature[i] > 34 && precipProb[i] > 40) {
+      const intensity = Math.random();
+      if (intensity > 0.6) return +(0.02 + Math.random() * 0.15).toFixed(2);
+      if (intensity > 0.3) return +(0.01 + Math.random() * 0.05).toFixed(2);
+    }
+    return 0;
+  });
+
+  // Snow: when temp < 34 during storm
+  const snow = hours.map((_, i) => {
+    const dayOffset = i / 24;
+    if (dayOffset < 2 || dayOffset > 5) return 0;
+    if (temperature[i] <= 34 && precipProb[i] > 40) {
+      const intensity = Math.random();
+      if (intensity > 0.5) return +(0.1 + Math.random() * 0.8).toFixed(1);
+      if (intensity > 0.2) return +(0.05 + Math.random() * 0.3).toFixed(2);
+    }
+    return 0;
+  });
+
+  return {
+    locationName: "Simulated",
+    hours,
+    temperature,
+    windChill,
+    windSpeed,
+    windDir,
+    skyCover,
+    precipProb,
+    humidity,
+    rain,
+    snow,
+  };
+}
+
+function loadSimulated() {
+  cachedDataset = generateSimulatedData();
+  render(cachedDataset);
+  document.getElementById("status").textContent = "Simulated data loaded: 168 hours (7 days) with rain & snow storm. " + new Date().toLocaleTimeString();
+}
+
+async function reload() {
+  const status = document.getElementById("status");
+  status.textContent = "Fetching data from api.weather.gov...";
+  try {
+    cachedDataset = await fetchForecastData();
+    render(cachedDataset);
+    status.textContent = `Data loaded: ${cachedDataset.hours.length} hours from ${cachedDataset.locationName}. Last updated: ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    status.textContent = `☀️ NOAA is broken, try again later 😊`;
+    console.error(e);
+  }
+}
+
+function render(dataset) {
+  const container = document.getElementById("pages");
+  container.innerHTML = "";
+
+  const now = Date.now();
+  let firstIdx = 0;
+  for (let i = 0; i < dataset.hours.length; i++) {
+    if (new Date(dataset.hours[i]).getTime() <= now) firstIdx = i;
+    else break;
+  }
+  firstIdx = Math.max(0, firstIdx - 2);
+
+  const pageSize = CONFIG.HOURS_PER_PAGE;
+  for (let start = firstIdx; start < dataset.hours.length; start += pageSize) {
+    const count = Math.min(pageSize, dataset.hours.length - start);
+    if (count < 6) break;
+
+    const div = document.createElement("div");
+    div.className = "page";
+    const canvas = document.createElement("canvas");
+    div.appendChild(canvas);
+    container.appendChild(div);
+    const pageIndex = (start - firstIdx) / pageSize;
+    renderForecastGraph(canvas, dataset, start, count, pageIndex);
+  }
+}
+
+reload();
+</script>
+</body>
+</html>
