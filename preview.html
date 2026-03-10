@@ -44,9 +44,9 @@ const COLORS = {
 const SERIES_COLORS = {
   temperature: "#FF4444",
   windChill:   "#6666FF",
-  windSpeed:   "#BBBBBB",
+  windSpeed:   "#CCDDFF",
   skyCover:    "#CCCCCC",
-  precipProb:  "#0088FF",
+  precipProb:  "#FFCC00",
   humidity:    "#00CCCC",
   rain:        "#66BB66",
   snow:        "#88BBFF",
@@ -221,16 +221,7 @@ function drawYLabels(ctx, yMin, yMax, rect, options) {
     const minY = rect.y + rect.h - minYFrac * rect.h + fontSize / 3;
     ctx.fillText(maxStr, rect.x + 2, maxY);
     ctx.fillText(minStr, rect.x + 2, minY);
-    if (options && options.currentVal != null) {
-      const curStr = Math.round(options.currentVal) + "°";
-      const yFrac = (options.currentVal - yMin) / (yMax - yMin);
-      const curY = rect.y + rect.h - yFrac * rect.h + fontSize / 3;
-      ctx.fillStyle = "#FF4444";
-      ctx.font = `bold ${fontSize}px -apple-system, system-ui, sans-serif`;
-      ctx.fillText(curStr, rect.x + 2, curY);
-      ctx.fillStyle = C.LABEL;
-      ctx.font = `${fontSize}px -apple-system, system-ui, sans-serif`;
-    }
+    // currentVal label removed — inline temp labels handle this now
   } else {
     ctx.textAlign = "right";
     ctx.fillText(maxStr, rect.x + rect.w - 2, rect.y + 9);
@@ -388,7 +379,7 @@ function renderForecastGraph(canvas, dataset, startIdx, count, pageIndex) {
   const PLOT_W = W - MARGIN_L - MARGIN_R;
 
   // Header
-  const timeLabel = pageIndex === 0 ? "now" : `+${pageIndex * CONFIG.HOURS_PER_PAGE}h`;
+  const timeLabel = pageIndex === 0 ? "Now" : `+${pageIndex * CONFIG.HOURS_PER_PAGE}h`;
   ctx.font = "bold 13px -apple-system, system-ui, sans-serif";
   ctx.fillStyle = C.TEXT;
   ctx.fillText(`Foxtown ${timeLabel}`, MARGIN_L + 2, 18);
@@ -453,11 +444,10 @@ function renderForecastGraph(canvas, dataset, startIdx, count, pageIndex) {
       const allVals = sharedSeries.flatMap(s => s.data).filter(v => v != null);
       const range = hasFixedRange ? { min: strip.yMin, max: strip.yMax } : autoRange(allVals, 0.1);
       drawHorizontalGrid(ctx, plotRect, 4);
-      const currentVal = !hasFixedRange ? sharedSeries[0].data.find(v => v != null) : undefined;
-      const dataMax = !hasFixedRange ? Math.max(...allVals) : undefined;
-      const dataMin = !hasFixedRange ? Math.min(...allVals) : undefined;
-      const yLabelOpts = hasFixedRange ? {} : { side: "left", fontSize: 14, currentVal, dataMax, dataMin };
-      drawYLabels(ctx, range.min, range.max, plotRect, yLabelOpts);
+      const tempVals = !hasFixedRange ? sharedSeries[0].data.filter(v => v != null) : [];
+      const currentVal = tempVals.length > 0 ? tempVals[0] : undefined;
+      const dataMax = tempVals.length > 0 ? Math.max(...tempVals) : undefined;
+      const dataMin = tempVals.length > 0 ? Math.min(...tempVals) : undefined;
       for (const s of strip.series) {
         const sYMin = s.fixedYMin != null ? s.fixedYMin : range.min;
         const sYMax = s.fixedYMax != null ? s.fixedYMax : range.max;
@@ -467,10 +457,34 @@ function renderForecastGraph(canvas, dataset, startIdx, count, pageIndex) {
           drawLineChart(ctx, s.data, sYMin, sYMax, plotRect, s.color, s.width);
         }
       }
+      const yLabelOpts = hasFixedRange ? {} : { side: "left", fontSize: 14, currentVal, dataMax, dataMin };
+      drawYLabels(ctx, range.min, range.max, plotRect, yLabelOpts);
+      // Inline temp labels every 2 hours
+      if (!hasFixedRange) {
+        const tempData = sharedSeries[0].data;
+        const fontSize = 17;
+        ctx.font = `bold ${fontSize}px -apple-system, system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        for (let i = 0; i < tempData.length; i += 2) {
+          if (tempData[i] == null) continue;
+          const val = Math.round(tempData[i]);
+          const label = String(val);
+          const x = plotRect.x + (i / (tempData.length - 1)) * plotRect.w;
+          const yFrac = (tempData[i] - range.min) / (range.max - range.min);
+          const y = plotRect.y + plotRect.h - yFrac * plotRect.h;
+          const tw = ctx.measureText(label).width + 4;
+          ctx.fillStyle = C.BG;
+          ctx.fillRect(x - tw / 2, y - fontSize / 2 - 2, tw, fontSize + 4);
+          ctx.fillStyle = "#FF4444";
+          ctx.fillText(label, x, y + fontSize / 3);
+        }
+        ctx.textAlign = "left";
+      }
       // Legend (top-right)
       const legends = strip.legend || [
         { text: "Temperature (°F)", color: SERIES_COLORS.temperature },
         { text: "Wind Chill (°F)", color: SERIES_COLORS.windChill },
+        { text: "Wind Speed (mph)", color: SERIES_COLORS.windSpeed },
       ];
       drawLegend(ctx, legends, rect);
     } else if (strip.type === "bar") {

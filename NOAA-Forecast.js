@@ -18,28 +18,24 @@ const TEXT_COLOR = new Color("#FFFFFF");
 const GRID_COLOR = new Color("#444444", 0.5);
 const LABEL_COLOR = new Color("#BBBBBB");
 const NIGHT_OVERLAY = new Color("#000000", 0.2);
+const SEP_COLOR = new Color("#000000", 0.5);
 
-const SERIES = [
-  { key: "temperature",    label: "Temp °F",    color: new Color("#FF4444"), type: "line", group: "temp" },
-  { key: "windChill",      label: "WndChl °F",  color: new Color("#6666FF"), type: "line", group: "temp" },
-  { key: "windSpeed",      label: "Wind mph",   color: new Color("#BBBBBB"), type: "area", group: "wind" },
-  { key: "skyCover",       label: "Sky %",       color: new Color("#CCCCCC"), type: "area", group: "sky",    yMin: 0, yMax: 100 },
-  { key: "precipProb",     label: "PoP %",       color: new Color("#0088FF"), type: "bar",  group: "precip", yMin: 0, yMax: 100 },
-  { key: "humidity",       label: "RH %",        color: new Color("#00CCCC"), type: "line", group: "rh",     yMin: 0, yMax: 100 },
-  { key: "rain",           label: "Rain in",     color: new Color("#66BB66"), type: "bar",  group: "rain" },
-  { key: "snow",           label: "Snow in",     color: new Color("#88BBFF"), type: "bar",  group: "snow" },
+// Series colors — indexed by: 0=temp, 1=windChill, 2=windSpeed, 3=sky, 4=precip, 5=humidity, 6=rain, 7=snow
+const SC = [
+  new Color("#FF4444"),  // temperature
+  new Color("#6666FF"),  // wind chill
+  new Color("#CCDDFF"),  // wind speed
+  new Color("#CCCCCC"),  // sky cover
+  new Color("#FFCC00"),  // precip probability
+  new Color("#00CCCC"),  // humidity
+  new Color("#66BB66"),  // rain
+  new Color("#88BBFF"),  // snow
 ];
 
 // ── Unit Conversions ───────────────────────────────────────────────
 function cToF(c) { return c != null ? c * 9 / 5 + 32 : null; }
 function kphToMph(k) { return k != null ? k * 0.621371 : null; }
 function mmToIn(mm) { return mm != null ? mm / 25.4 : null; }
-function degToCardinal(d) {
-  if (d == null) return "";
-  const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
-  return dirs[Math.round(d / 22.5) % 16];
-}
-
 // ── ISO 8601 Duration Parsing ──────────────────────────────────────
 function parseDurationHours(dur) {
   let hours = 0;
@@ -126,7 +122,6 @@ function buildDataset(p, locationName) {
     temperature:  expandTimeSeries(p.temperature),
     windChill:    expandTimeSeries(p.windChill),
     windSpeed:    expandTimeSeries(p.windSpeed),
-    windDir:      expandTimeSeries(p.windDirection),
     skyCover:     expandTimeSeries(p.skyCover),
     precipProb:   expandTimeSeries(p.probabilityOfPrecipitation),
     humidity:     expandTimeSeries(p.relativeHumidity),
@@ -166,7 +161,6 @@ function buildDataset(p, locationName) {
     temperature: mapSeries(raw.temperature, cToF),
     windChill:   mapSeries(raw.windChill, cToF),
     windSpeed:   mapSeries(raw.windSpeed, kphToMph),
-    windDir:     mapSeries(raw.windDir),
     skyCover:    mapSeries(raw.skyCover),
     precipProb:  mapSeries(raw.precipProb),
     humidity:    mapSeries(raw.humidity),
@@ -228,16 +222,6 @@ function drawYLabels(ctx, yMin, yMax, rect, options) {
     const minY = rect.y + rect.height - minYFrac * rect.height - fontSize / 2;
     ctx.drawTextInRect(maxStr, new Rect(rect.x + 2, maxY, 40, fontSize + 4));
     ctx.drawTextInRect(minStr, new Rect(rect.x + 2, minY, 40, fontSize + 4));
-    if (options && options.currentVal != null) {
-      const curStr = Math.round(options.currentVal) + "°";
-      const yFrac = (options.currentVal - yMin) / (yMax - yMin);
-      const curY = rect.y + rect.height - yFrac * rect.height - fontSize / 2;
-      ctx.setTextColor(new Color("#FF4444"));
-      ctx.setFont(Font.boldSystemFont(fontSize));
-      ctx.drawTextInRect(curStr, new Rect(rect.x + 2, curY, 40, fontSize + 4));
-      ctx.setTextColor(LABEL_COLOR);
-      ctx.setFont(Font.systemFont(fontSize));
-    }
   } else {
     ctx.drawTextInRect(maxStr, new Rect(rect.x + rect.width - 28, rect.y, 26, 10));
     ctx.drawTextInRect(minStr, new Rect(rect.x + rect.width - 28, rect.y + rect.height - 10, 26, 10));
@@ -347,20 +331,6 @@ function drawTimeAxis(ctx, hours, rect) {
   }
 }
 
-function drawWindDirectionLabels(ctx, windDir, hours, rect) {
-  ctx.setFont(Font.systemFont(6));
-  ctx.setTextColor(LABEL_COLOR);
-  const barW = rect.width / hours.length;
-  for (let i = 0; i < hours.length; i++) {
-    const d = new Date(hours[i]);
-    if (d.getHours() % 3 === 0 && windDir[i] != null) {
-      const cardinal = degToCardinal(windDir[i]);
-      const x = rect.x + i * barW;
-      ctx.drawTextInRect(cardinal, new Rect(x - 6, rect.y + rect.height - 9, 16, 9));
-    }
-  }
-}
-
 // ── Main Graph Renderer ───────────────────────────────────────────
 function autoRange(data, padding) {
   const valid = data.filter(v => v != null);
@@ -390,7 +360,7 @@ function renderForecastGraph(dataset, startIdx, count, pageIndex) {
   const PLOT_W = W - MARGIN_L - MARGIN_R;
 
   // Header
-  const timeLabel = pageIndex === 0 ? "now" : `+${pageIndex * CONFIG.HOURS_PER_PAGE}h`;
+  const timeLabel = pageIndex === 0 ? "Now" : `+${pageIndex * CONFIG.HOURS_PER_PAGE}h`;
   ctx.setFont(Font.boldSystemFont(13));
   ctx.setTextColor(TEXT_COLOR);
   ctx.drawTextInRect(
@@ -398,39 +368,39 @@ function renderForecastGraph(dataset, startIdx, count, pageIndex) {
     new Rect(MARGIN_L + 2, 4, PLOT_W, 18)
   );
 
-  // Strip definitions: { key(s), label, type, height }
+  // Strip definitions
   const strips = [
     {
       height: 100, type: "multi-line",
       series: [
-        { data: sliceData("windSpeed"), color: SERIES[2].color, width: 1, fill: true, fixedYMin: 0, fixedYMax: 100, fillOpacity: 0.12 },
-        { data: sliceData("temperature"), color: SERIES[0].color, width: 2 },
-        { data: sliceData("windChill"),   color: SERIES[1].color, width: 1 },
+        { data: sliceData("windSpeed"), color: SC[2], width: 1, fill: true, fixedYMin: 0, fixedYMax: 100, fillOpacity: 0.12 },
+        { data: sliceData("temperature"), color: SC[0], width: 2 },
+        { data: sliceData("windChill"),   color: SC[1], width: 1 },
       ],
     },
     {
       height: 80, type: "multi-line",
       yMin: 0, yMax: 100,
       series: [
-        { data: sliceData("skyCover"),   color: SERIES[3].color, width: 1.5, fill: true },
-        { data: sliceData("precipProb"), color: SERIES[4].color, width: 2 },
-        { data: sliceData("humidity"),   color: SERIES[5].color, width: 1.5 },
+        { data: sliceData("skyCover"),   color: SC[3], width: 1.5, fill: true },
+        { data: sliceData("precipProb"), color: SC[4], width: 2 },
+        { data: sliceData("humidity"),   color: SC[5], width: 1.5 },
       ],
       legend: [
-        { text: "Sky Cover", color: SERIES[3].color },
-        { text: "Precipitation Probability", color: SERIES[4].color },
-        { text: "Relative Humidity", color: SERIES[5].color },
+        { text: "Sky Cover", color: SC[3] },
+        { text: "Precipitation Probability", color: SC[4] },
+        { text: "Relative Humidity", color: SC[5] },
       ],
     },
     {
       height: 50, type: "bar",
-      data: sliceData("rain"), color: SERIES[6].color, showAccum: true,
-      legend: [{ text: `Rain ${accumTotal(sliceData("rain"))} inches`, color: SERIES[6].color }],
+      data: sliceData("rain"), color: SC[6], showAccum: true,
+      legend: [{ text: `Rain ${accumTotal(sliceData("rain"))} inches`, color: SC[6] }],
     },
     {
       height: 50, type: "bar",
-      data: sliceData("snow"), color: SERIES[7].color, showAccum: true,
-      legend: [{ text: `Snow ${accumTotal(sliceData("snow"))} inches`, color: SERIES[7].color }],
+      data: sliceData("snow"), color: SC[7], showAccum: true,
+      legend: [{ text: `Snow ${accumTotal(sliceData("snow"))} inches`, color: SC[7] }],
     },
   ];
 
@@ -443,7 +413,7 @@ function renderForecastGraph(dataset, startIdx, count, pageIndex) {
 
     // Dark separator between strips
     if (si > 0) {
-      ctx.setFillColor(new Color("#000000", 0.5));
+      ctx.setFillColor(SEP_COLOR);
       ctx.fillRect(new Rect(MARGIN_L, y - GAP + (GAP - SEP_H) / 2, PLOT_W, SEP_H));
     }
 
@@ -460,11 +430,9 @@ function renderForecastGraph(dataset, startIdx, count, pageIndex) {
       const allVals = sharedSeries.flatMap(s => s.data).filter(v => v != null);
       const range = hasFixedRange ? { min: strip.yMin, max: strip.yMax } : autoRange(allVals, 0.1);
       drawHorizontalGrid(ctx, plotRect, range.min, range.max, 4);
-      const currentVal = !hasFixedRange ? sharedSeries[0].data.find(v => v != null) : undefined;
-      const dataMax = !hasFixedRange ? Math.max(...allVals) : undefined;
-      const dataMin = !hasFixedRange ? Math.min(...allVals) : undefined;
-      const yLabelOpts = hasFixedRange ? {} : { side: "left", fontSize: 14, currentVal, dataMax, dataMin };
-      drawYLabels(ctx, range.min, range.max, plotRect, yLabelOpts);
+      const tempVals = !hasFixedRange ? sharedSeries[0].data.filter(v => v != null) : [];
+      const dataMax = tempVals.length > 0 ? Math.max(...tempVals) : undefined;
+      const dataMin = tempVals.length > 0 ? Math.min(...tempVals) : undefined;
       for (const s of strip.series) {
         const sYMin = s.fixedYMin != null ? s.fixedYMin : range.min;
         const sYMax = s.fixedYMax != null ? s.fixedYMax : range.max;
@@ -474,10 +442,32 @@ function renderForecastGraph(dataset, startIdx, count, pageIndex) {
           drawLineChart(ctx, s.data, sYMin, sYMax, plotRect, s.color, s.width);
         }
       }
+      const yLabelOpts = hasFixedRange ? {} : { side: "left", fontSize: 14, dataMax, dataMin };
+      drawYLabels(ctx, range.min, range.max, plotRect, yLabelOpts);
+      // Inline temp labels every 2 hours
+      if (!hasFixedRange) {
+        const tempData = sharedSeries[0].data;
+        const fontSize = 17;
+        ctx.setFont(Font.boldSystemFont(fontSize));
+        for (let i = 0; i < tempData.length; i += 2) {
+          if (tempData[i] == null) continue;
+          const val = Math.round(tempData[i]);
+          const label = String(val);
+          const x = plotRect.x + (i / (tempData.length - 1)) * plotRect.width;
+          const yFrac = (tempData[i] - range.min) / (range.max - range.min);
+          const y = plotRect.y + plotRect.height - yFrac * plotRect.height;
+          const tw = label.length * (fontSize * 0.65) + 2;
+          ctx.setFillColor(BG_COLOR);
+          ctx.fillRect(new Rect(x - tw / 2, y - fontSize / 2 - 1, tw, fontSize + 4));
+          ctx.setTextColor(new Color("#FF4444"));
+          ctx.drawTextInRect(label, new Rect(x - tw / 2, y - fontSize / 2, tw, fontSize + 2));
+        }
+      }
       // Legend (top-right)
       const legends = strip.legend || [
-        { text: "Temperature (°F)", color: SERIES[0].color },
-        { text: "Wind Chill (°F)", color: SERIES[1].color },
+        { text: "Temperature (°F)", color: SC[0] },
+        { text: "Wind Chill (°F)", color: SC[1] },
+        { text: "Wind Speed (mph)", color: SC[2] },
       ];
       drawLegend(ctx, legends, rect);
     } else if (strip.type === "bar") {
@@ -499,21 +489,6 @@ function renderForecastGraph(dataset, startIdx, count, pageIndex) {
             ctx.drawTextInRect(label, new Rect(plotRect.x + i * barW - 4, barY - 9, barW + 8, 9));
           }
         }
-      }
-    } else if (strip.type === "area") {
-      const yMin = strip.yMin != null ? strip.yMin : 0;
-      const yMax = strip.yMax != null ? strip.yMax : 100;
-      drawHorizontalGrid(ctx, plotRect, yMin, yMax, 4);
-      drawYLabels(ctx, yMin, yMax, plotRect);
-      drawFilledArea(ctx, strip.data, yMin, yMax, plotRect, strip.color);
-    } else if (strip.type === "line") {
-      const yMin = strip.yMin != null ? strip.yMin : autoRange(strip.data, 0.1).min;
-      const yMax = strip.yMax != null ? strip.yMax : autoRange(strip.data, 0.1).max;
-      drawHorizontalGrid(ctx, plotRect, yMin, yMax, 4);
-      drawYLabels(ctx, yMin, yMax, plotRect);
-      drawLineChart(ctx, strip.data, yMin, yMax, plotRect, strip.color, 1.5);
-      if (strip.windDir) {
-        drawWindDirectionLabels(ctx, strip.windDir, hours, plotRect);
       }
     }
 

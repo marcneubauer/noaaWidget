@@ -83,7 +83,7 @@ Dark mode only. No light mode support.
 |---|---|
 | Temperature | `#FF4444` (red) |
 | Wind Chill | `#6666FF` (blue) |
-| Wind Speed | `#BBBBBB` (gray) |
+| Wind Speed | `#CCDDFF` (very light blue) |
 | Sky Cover | `#CCCCCC` (light gray) |
 | Precip Probability | `#0088FF` (blue) |
 | Relative Humidity | `#00CCCC` (teal) |
@@ -104,7 +104,7 @@ Each 24h page renders as a vertical stack of strip charts sharing a common time 
 
 | Element | Height | Description |
 |---|---|---|
-| Header | 22px | Location name + time offset ("Foxtown now", "Foxtown +24h") |
+| Header | 22px | Location name + time offset ("Foxtown Now", "Foxtown +24h") |
 | Strip 1: Temp/Wind | 100px | Multi-line: temperature, wind chill, wind speed overlay |
 | Separator | 4px | Dark band `rgba(0,0,0,0.5)` centered in 8px gap |
 | Strip 2: Sky/Precip/RH | 80px | Multi-line: sky cover (filled), precip probability, humidity |
@@ -128,9 +128,9 @@ Each 24h page renders as a vertical stack of strip charts sharing a common time 
 - **Wind speed**: Drawn first as filled area (opacity 0.12), fixed Y range 0–100 mph
 - **Temperature**: Line (width 2), auto-ranged with 10% padding
 - **Wind chill**: Line (width 1), shares temperature Y range
-- **Y-axis labels**: Left side, 14px font, showing data min/max
+- **Y-axis labels**: Left side, 14px font, showing temperature min/max only (not wind chill)
 - **Current temperature**: Displayed in red bold at the corresponding Y position
-- **Legend** (top-right): "Temperature (°F)", "Wind Chill (°F)"
+- **Legend** (top-right): "Temperature (°F)", "Wind Chill (°F)", "Wind Speed (mph)"
 - **Wind direction**: Cardinal labels (N, NE, etc.) at bottom of plot, every 3 hours
 
 ### Strip 2: Sky Cover / Precip Probability / Humidity
